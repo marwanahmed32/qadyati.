@@ -343,13 +343,22 @@ async function registerSubscriber() {
 }
 
 // كل ما يفتح التطبيق: يسحب الخطة بس (من غير ما يبعت بيانات)
+// كل ما يفتح التطبيق أو يرجع للتاب، أو كل فترة وهو شغال: يسحب الخطة ويحدثها فورًا
 async function syncSubscriberRecord() {
   if (!store.profile?.phone) return;
   try {
     const res = await fetch(`${APPS_SCRIPT_URL}?phone=${encodeURIComponent(store.profile.phone)}`);
     if (!res.ok) return;
     const data = await res.json();
-    if (data.plan && data.plan !== store.subscription?.plan && data.plan !== 'trial') {
+
+    // لو الشيت رجّع إن الرقم مش موجود (اتشال الاسم/الرقم من الشيت) -> امسح بيانات التسجيل وارجعه لشاشة التسجيل من الأول
+    if (data.notFound === true) {
+      resetAppForReRegistration();
+      return;
+    }
+
+    if (data.plan && data.plan !== store.subscription?.plan) {
+      const oldPlan = store.subscription?.plan;
       store.subscription.plan = data.plan;
       const until = new Date(); until.setDate(until.getDate() + 30);
       store.subscription.paidUntil = until.toISOString();
@@ -357,9 +366,45 @@ async function syncSubscriberRecord() {
       store.subscription.aiUsedThisWeek = 0;
       store.subscription.legalUsedThisWeek = 0;
       save();
+
+      // لو كان عنده باقة قبل كده وتغيرت، نبّهه فورًا ونفك القفل لو كان متقفل
+      if (oldPlan) {
+        alert(`🎉 تم تفعيل باقة "${PLANS[data.plan]?.label || data.plan}" على حسابك الآن مباشرة!`);
+        if (!isAppLocked()) {
+          document.querySelectorAll('.nav .nb, .hdr-icon').forEach(b => b.style.display='');
+          initApp();
+        }
+      }
     }
   } catch(e) { console.warn('sync error:', e); }
 }
+
+// مسح بيانات التسجيل بالكامل وإرجاع المستخدم لشاشة "ابدأ الآن" من جديد
+// (القضايا والجلسات والمالية بتفضل محفوظة على الجهاز ومتتمسحش)
+function resetAppForReRegistration() {
+  stopSubscriberPolling();
+  store.profile = null;
+  store.subscription = null;
+  safeSet('qd_profile', 'null');
+  safeSet('qd_subscription', 'null');
+  alert('تم إلغاء تفعيل اشتراكك من النظام. من فضلك سجّل بياناتك من جديد للمتابعة.\n(قضاياك وجلساتك ومعلوماتك المالية محفوظة ومش هتضيع)');
+  location.reload();
+}
+
+// ─── مزامنة دورية أثناء استخدام التطبيق ───────────────────
+let subscriberPollInterval = null;
+function startSubscriberPolling() {
+  stopSubscriberPolling();
+  subscriberPollInterval = setInterval(() => {
+    if (document.visibilityState === 'visible') syncSubscriberRecord();
+  }, 60000); // كل دقيقة
+}
+function stopSubscriberPolling() {
+  if (subscriberPollInterval) { clearInterval(subscriberPollInterval); subscriberPollInterval = null; }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && store.profile?.phone) syncSubscriberRecord();
+});
 
 const ROLE_LABELS = { admin:'المستشار (Admin)', lawyer:'محامي مساعد', secretary:'سكرتيرة', accountant:'محاسب' };
 const ROLE_PERMISSIONS = {
@@ -766,20 +811,15 @@ function saveProfile() {
 }
 
 async function initApp() {
-  document.getElementById('hdr-welcome').textContent = TEAM_MODE
-    ? (ROLE_LABELS[currentUserRole] || 'مرحباً')
-    : 'سوّق مكتبك ونظّم قضاياك';
-  document.getElementById('hdr-name').textContent = store.profile.name;
-  initSubscription();
-  initSubscriberDb();
+  ...
   await syncSubscriberRecord();
   if (isAppLocked()) { showPaywallScreen(); return; }
   applyRolePermissions();
   scheduleReminders();
   render();
   checkNotifDot();
+  startSubscriberPolling();   // ← ضيف السطر ده
 }
-
 // ─── شاشة قفل التطبيق بعد انتهاء التجربة/الاشتراك ─────────
 function showPaywallScreen() {
   const el = document.getElementById('content');
