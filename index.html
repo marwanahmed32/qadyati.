@@ -307,7 +307,9 @@ option{background:#1a1a1a}
 // ─── CONSTANTS ───────────────────────────────────────────
 const PHONE_ME = "";
 // ─── بيانات التحصيل اليدوي (اشتراكات قضيتي) ────────────────
+// رقمك انت (صاحب المشروع) — عبّيه بالشكل الدولي بدون + أو 00 (مثال: 201012345678)
 const ADMIN_WHATSAPP = "201066400606";
+// رقم الاستقبال (Instapay أو فودافون كاش) — النص اللي هيظهر للعميل
 const ADMIN_PAYMENT_INFO = "فودافون كاش / انستاباي: 01066400606";
 const MONTHS = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
 const DAYS = ['الأحد','الإثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
@@ -325,9 +327,10 @@ const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwC8d9g_e8cOEMU
 
 function initSubscriberDb() {}
 
+// يتسجل في الشيت مرة واحدة بس عند أول تسجيل
 async function registerSubscriber() {
   if (!store.profile?.phone || !store.profile?.name) return;
-  if (store.profile._registered) return;
+  if (store.profile._registered) return; // سجّل قبل كده
   try {
     await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
@@ -339,22 +342,14 @@ async function registerSubscriber() {
   } catch(e) { console.warn('register error:', e); }
 }
 
-// كل ما يفتح التطبيق أو يرجع للتاب، أو كل فترة وهو شغال: يسحب الخطة ويحدثها فورًا
+// كل ما يفتح التطبيق: يسحب الخطة بس (من غير ما يبعت بيانات)
 async function syncSubscriberRecord() {
   if (!store.profile?.phone) return;
   try {
     const res = await fetch(`${APPS_SCRIPT_URL}?phone=${encodeURIComponent(store.profile.phone)}`);
     if (!res.ok) return;
     const data = await res.json();
-
-    // لو الشيت رجّع إن الرقم مش موجود (اتشال الاسم/الرقم من الشيت) -> امسح بيانات التسجيل وارجعه لشاشة التسجيل من الأول
-    if (data.notFound === true) {
-      resetAppForReRegistration();
-      return;
-    }
-
-    if (data.plan && data.plan !== store.subscription?.plan) {
-      const oldPlan = store.subscription?.plan;
+    if (data.plan && data.plan !== store.subscription?.plan && data.plan !== 'trial') {
       store.subscription.plan = data.plan;
       const until = new Date(); until.setDate(until.getDate() + 30);
       store.subscription.paidUntil = until.toISOString();
@@ -362,45 +357,9 @@ async function syncSubscriberRecord() {
       store.subscription.aiUsedThisWeek = 0;
       store.subscription.legalUsedThisWeek = 0;
       save();
-
-      // لو كان عنده باقة قبل كده وتغيرت، نبّهه فورًا ونحدّث الواجهة
-      if (oldPlan) {
-        alert(`🎉 تم تفعيل باقة "${PLANS[data.plan]?.label || data.plan}" على حسابك الآن مباشرة!`);
-        if (!isAppLocked()) {
-          document.querySelectorAll('.nav .nb, .hdr-icon').forEach(b => b.style.display='');
-          initApp();
-        }
-      }
     }
   } catch(e) { console.warn('sync error:', e); }
 }
-
-// مسح بيانات التسجيل بالكامل وإرجاع المستخدم لشاشة "ابدأ الآن" من جديد
-// (بيانات القضايا والجلسات والمالية بتفضل محفوظة على الجهاز ومتتمسحش)
-function resetAppForReRegistration() {
-  stopSubscriberPolling();
-  store.profile = null;
-  store.subscription = null;
-  safeSet('qd_profile', 'null');
-  safeSet('qd_subscription', 'null');
-  alert('تم إلغاء تفعيل اشتراكك من النظام. من فضلك سجّل بياناتك من جديد للمتابعة.\n(قضاياك وجلساتك ومعلوماتك المالية محفوظة ومش هتضيع)');
-  location.reload();
-}
-
-// ─── مزامنة دورية أثناء استخدام التطبيق ───────────────────
-let subscriberPollInterval = null;
-function startSubscriberPolling() {
-  stopSubscriberPolling();
-  subscriberPollInterval = setInterval(() => {
-    if (document.visibilityState === 'visible') syncSubscriberRecord();
-  }, 60000); // كل دقيقة
-}
-function stopSubscriberPolling() {
-  if (subscriberPollInterval) { clearInterval(subscriberPollInterval); subscriberPollInterval = null; }
-}
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && store.profile?.phone) syncSubscriberRecord();
-});
 
 const ROLE_LABELS = { admin:'المستشار (Admin)', lawyer:'محامي مساعد', secretary:'سكرتيرة', accountant:'محاسب' };
 const ROLE_PERMISSIONS = {
@@ -441,11 +400,13 @@ let store = {
   cases: JSON.parse(safeGet('qd_cases', '[]')),
   subscription: JSON.parse(safeGet('qd_subscription', 'null'))
 };
+// ─── مسح بيانات التسجيل فقط (القضايا محفوظة) ──────────────
 if (store.profile && !store.profile._v3) {
   store.profile = null;
   store.subscription = null;
   safeSet('qd_profile', 'null');
   safeSet('qd_subscription', 'null');
+  // القضايا والبيانات التانية مش بتتمسح
 }
 function save() {
   safeSet('qd_profile', JSON.stringify(store.profile));
@@ -514,7 +475,7 @@ function initSubscription() {
     store.subscription = {
       plan: 'trial',
       signupDate: new Date().toISOString(),
-      paidUntil: null,
+      paidUntil: null, // تاريخ نهاية الاشتراك المدفوع (يتحدد بعد ربط بوابة الدفع فعليًا)
       weekStart: getWeekStart(),
       aiUsedThisWeek: 0,
       legalUsedThisWeek: 0
@@ -549,17 +510,20 @@ function trialDaysLeft() {
   return Math.max(0, TRIAL_DAYS - daysPassed);
 }
 
+// التطبيق مقفول لو: كان في التجربة المجانية والأسبوع خلص، وملوش اشتراك مدفوع ساري
 function isAppLocked() {
   const sub = store.subscription;
   if (sub.plan === 'trial') {
     return trialDaysLeft() <= 0;
   }
+  // خطة مدفوعة: لو فيه تاريخ انتهاء اشتراك ومر عليه (هيتفعل فعليًا بعد ربط بوابة الدفع)
   if (sub.paidUntil && new Date(sub.paidUntil) < new Date()) {
     return true;
   }
   return false;
 }
 
+// يتحقق من إمكانية استخدام ميزة ذكاء اصطناعي (بوست/كارت/تحليل/مقال) وينقص من الرصيد لو مسموح
 function checkAndConsumeAIQuota() {
   resetWeeklyQuotaIfNeeded();
   const sub = store.subscription;
@@ -748,7 +712,7 @@ function submitOnboard() {
   save();
   document.getElementById('onboard').remove();
   initApp();
-  registerSubscriber();
+  registerSubscriber(); // مرة واحدة بس عند التسجيل
 }
 
 // ─── صفحة البروفايل (إعدادات المستشار) ────────────────────
@@ -814,13 +778,12 @@ async function initApp() {
   scheduleReminders();
   render();
   checkNotifDot();
-  startSubscriberPolling();
 }
 
 // ─── شاشة قفل التطبيق بعد انتهاء التجربة/الاشتراك ─────────
 function showPaywallScreen() {
   const el = document.getElementById('content');
-  const wasTrial = true;
+  const wasTrial = true; // بعد انتهاء الأسبوع أو الاشتراك المدفوع
   el.innerHTML = `
     <div style="text-align:center;padding:40px 16px 20px">
       <div style="font-size:44px;margin-bottom:14px">🔒</div>
@@ -831,6 +794,7 @@ function showPaywallScreen() {
           : 'انتهت مدة اشتراكك الحالي. جدّد اشتراكك عشان تكمل الوصول لكل قضاياك وجلساتك ومميزات التطبيق.'}
       </div>
     </div>`;
+  // إخفاء الأزرار والتنقل لحد ما يشترك
   document.querySelectorAll('.nav .nb, .hdr-icon').forEach(b => b.style.display='none');
   showPlansPageInline();
 }
@@ -847,6 +811,7 @@ function showPlansPageInline() {
 function applyRolePermissions() {
   if (!TEAM_MODE) return;
   const navBtns = document.querySelectorAll('.nav .nb');
+  // الترتيب الجديد: 0 الرئيسية | 1 سوّق لمكتبك | 2 القضايا | 3 الجلسات | 4 المالية | 5 لوحة التحكم
   if (navBtns[1] && !can('viewAI')) navBtns[1].style.display = 'none';
   if (navBtns[2] && !can('viewCases')) navBtns[2].style.display = 'none';
   if (navBtns[3] && !can('viewSessions')) navBtns[3].style.display = 'none';
@@ -902,6 +867,7 @@ function getTomorrow() {
 function getToday() {
   return new Date().toISOString().split('T')[0];
 }
+// عدد الأيام المتبقية على تاريخ معين (سالب لو التاريخ فات)
 function daysUntil(dateStr) {
   const today = new Date(); today.setHours(0,0,0,0);
   const target = new Date(dateStr); target.setHours(0,0,0,0);
@@ -919,6 +885,7 @@ function buildCaseName(client, clientRole, opponent, opponentRole) {
 const CASE_ROLES = ['مدعي','مدعى عليه','مستأنف','مستأنف عليه','طاعن','مطعون ضده','مدعي بالحق المدني','متهم','طالب','مطلوب ضده','أخرى'];
 
 // ─── الذكاء الاصطناعي (Anthropic API مباشرة) ──────────────
+// رابط الـ Worker بتاعك على Cloudflare — غيّره بعد النشر لو الرابط مختلف
 const AI_WORKER_URL = 'https://qadyaati.maroooahmedddhh.workers.dev/';
 
 async function callAI(promptText, maxTokens = 800) {
@@ -937,7 +904,7 @@ async function callAI(promptText, maxTokens = 800) {
   return text.trim();
 }
 // ─── المساعد القانوني الذكي (Chat) ────────────────────────
-let aiChatHistory = [];
+let aiChatHistory = []; // {role:'user'|'ai', text}
 const AI_QUICK_PROMPTS = [
   'لخّص هذه القضية في نقاط',
   'اقترح دفوع قانونية مناسبة',
@@ -1028,6 +995,7 @@ function sendWhatsAppSession(caseId, sessId) {
   window.open(waLink(c.phone, msg), '_blank');
 }
 
+// تذكير للمحامي نفسه (على رقمه هو) — مش رسالة للعميل
 function sendWhatsAppSelfReminder(caseId, sessId) {
   const c = store.cases.find(x=>x.id===caseId);
   const s = c?.sessions.find(x=>x.id===sessId);
@@ -1048,6 +1016,7 @@ function sendWhatsAppGeneral(caseId) {
 }
 
 // ─── مركز التسويق: منشورات AI + بطاقة تعريف رقمية ─────────
+// ─── صفحة الباقات ──────────────────────────────────────────
 function buildPlanCardsHTML(showCurrentBadge) {
   const sub = store.subscription;
   const check = `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
@@ -1090,6 +1059,7 @@ function buildPlanCardsHTML(showCurrentBadge) {
   }).join('');
 }
 
+// ─── تعليمات الدفع اليدوي (Instapay/فودافون كاش) ──────────
 function buildPaymentInstructionsHTML() {
   if (!ADMIN_PAYMENT_INFO && !ADMIN_WHATSAPP) return '';
   return `<div class="sbox" style="flex-direction:column;align-items:flex-start;gap:6px">
@@ -1235,6 +1205,7 @@ async function generateSocialPost() {
       const parsed = JSON.parse(raw);
       headline = parsed.headline; post = parsed.post;
     } catch(e) {
+      // fallback لو الرد مش JSON صافي
       post = raw; headline = raw.split('\n')[0].slice(0,40);
     }
     resultEl.innerHTML = `
@@ -1251,6 +1222,7 @@ async function generateSocialPost() {
   btn.disabled = false;
 }
 
+// ─── صورة قانونية تصميمية جاهزة للمنشور ────────────────────
 function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
   const words = text.split(' ');
   let line = '';
@@ -1277,11 +1249,13 @@ function drawSocialPostImage(headline) {
   grad.addColorStop(1, '#1c2740');
   ctx.fillStyle = grad; ctx.fillRect(0,0,W,H);
 
+  // إطار ذهبي
   ctx.strokeStyle = '#c9a84c'; ctx.lineWidth = 6;
   ctx.strokeRect(28,28,W-56,H-56);
   ctx.strokeStyle = 'rgba(201,168,76,0.35)'; ctx.lineWidth = 1.5;
   ctx.strokeRect(44,44,W-88,H-88);
 
+  // ميزان عدل مصغر أعلى المنتصف
   ctx.save();
   ctx.translate(W/2, 240);
   ctx.strokeStyle = '#c9a84c'; ctx.fillStyle = '#c9a84c'; ctx.lineWidth = 5; ctx.lineCap='round'; ctx.lineJoin='round';
@@ -1296,14 +1270,17 @@ function drawSocialPostImage(headline) {
   ctx.beginPath(); ctx.moveTo(-35,55); ctx.lineTo(35,55); ctx.stroke();
   ctx.restore();
 
+  // العنوان الرئيسي (يلف تلقائيًا)
   ctx.direction = 'rtl'; ctx.textAlign = 'center';
   ctx.fillStyle = '#f0f0f0';
   ctx.font = '800 58px "Segoe UI", Tahoma, Arial';
   wrapCanvasText(ctx, headline || 'استشارة قانونية موثوقة', W/2, H/2, W-180, 72);
 
+  // خط فاصل
   ctx.strokeStyle = 'rgba(201,168,76,0.5)'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(W/2-90, H-230); ctx.lineTo(W/2+90, H-230); ctx.stroke();
 
+  // اسم المكتب أسفل الصورة
   ctx.fillStyle = '#c9a84c';
   ctx.font = '700 34px "Segoe UI", Tahoma, Arial';
   ctx.fillText(store.profile?.name || 'مستشار قانوني', W/2, H-170);
@@ -1330,6 +1307,7 @@ function copyMarketingText(elId) {
   });
 }
 
+// ─── رسم البطاقة الرقمية الفعلية (Canvas) ─────────────────
 function drawBusinessCard() {
   const canvas = document.getElementById('mk-card-canvas');
   if (!canvas) return;
@@ -1342,41 +1320,52 @@ function drawBusinessCard() {
   store.cases.forEach(c=>{ types[c.type]=true; });
   const specialties = [...new Set([...Object.keys(types), ...((site.extraSpecialties||'').split(/[،,]/).map(s=>s.trim()).filter(Boolean))])].slice(0,4);
 
+  // خلفية متدرجة
   const grad = ctx.createLinearGradient(0,0,W,H);
   grad.addColorStop(0, '#0d1321');
   grad.addColorStop(1, '#151b28');
   ctx.fillStyle = grad;
   ctx.fillRect(0,0,W,H);
 
+  // إطار ذهبي
   ctx.strokeStyle = '#c9a84c';
   ctx.lineWidth = 3;
   ctx.strokeRect(14,14,W-28,H-28);
 
+  // شعار ميزان عدل واقعي (يسار البطاقة)
   ctx.save();
   ctx.translate(150, H/2);
   ctx.strokeStyle = '#c9a84c';
   ctx.fillStyle = '#c9a84c';
 
+  // القاعدة (مستطيل مزخرف بالأسفل)
   ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.beginPath(); ctx.moveTo(-55,98); ctx.lineTo(55,98); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(-30,98); ctx.lineTo(-30,80); ctx.lineTo(30,80); ctx.lineTo(30,98); ctx.stroke();
 
+  // العمود الرأسي (بيتخانق شوية لأناقة)
   ctx.beginPath();
   ctx.moveTo(-4,80); ctx.lineTo(-3,-78); ctx.lineTo(3,-78); ctx.lineTo(4,80); ctx.closePath();
   ctx.fill();
 
+  // قمة العمود (كرة صغيرة زخرفية)
   ctx.beginPath(); ctx.arc(0,-88,7,0,Math.PI*2); ctx.fill();
 
+  // الذراع الأفقي (بيضاوي رفيع بدل خط عريض)
   ctx.lineWidth = 5;
   ctx.beginPath(); ctx.moveTo(-82,-68); ctx.lineTo(82,-68); ctx.stroke();
+  // نقطة ارتكاز الذراع
   ctx.beginPath(); ctx.arc(0,-68,6,0,Math.PI*2); ctx.fill();
 
+  // الأطباق: سلاسل + طبق دائري حقيقي (مش مثلث)
   ctx.lineWidth = 2.2;
   [-80,80].forEach(sideX=>{
+    // سلسلتين مائلتين بدل خط واحد (إحساس أعمق بالتعليق)
     ctx.beginPath(); ctx.moveTo(sideX-22,-66); ctx.lineTo(sideX,-8); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(sideX+22,-66); ctx.lineTo(sideX,-8); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(sideX,-66); ctx.lineTo(sideX,-8); ctx.stroke();
 
+    // الطبق: نص دائرة (كوب الميزان) بحواف واضحة
     ctx.beginPath();
     ctx.ellipse(sideX, -8, 34, 9, 0, 0, Math.PI, false);
     ctx.stroke();
@@ -1386,6 +1375,7 @@ function drawBusinessCard() {
   });
   ctx.restore();
 
+  // النصوص (RTL)
   ctx.direction = 'rtl';
   ctx.textAlign = 'right';
   const rightX = W - 60;
@@ -1398,6 +1388,7 @@ function drawBusinessCard() {
   ctx.font = '800 48px "Segoe UI", Tahoma, Arial';
   ctx.fillText(p.name || 'المستشار', rightX, 155);
 
+  // خط فاصل ذهبي رفيع
   ctx.strokeStyle = 'rgba(201,168,76,0.4)';
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(rightX, 180); ctx.lineTo(320, 180); ctx.stroke();
@@ -1408,6 +1399,7 @@ function drawBusinessCard() {
   const customText = (document.getElementById('mk-card-custom')?.value || '').trim();
   if (site.yearsExp) { ctx.fillText(`خبرة ${site.yearsExp} سنة في الممارسة القانونية`, rightX, y); y += 34; }
   if (customText) {
+    // لف النص لأكثر من سطر لو طويل
     const maxWidth = W - 400;
     const words = customText.split(' ');
     let line = '';
@@ -1422,6 +1414,7 @@ function drawBusinessCard() {
     ctx.fillText(`التخصصات: ${specialties.join('، ')}`, rightX, y); y += 34;
   }
 
+  // شريط سفلي للتواصل
   ctx.fillStyle = 'rgba(201,168,76,0.1)';
   ctx.fillRect(300, H-110, W-360, 70);
   ctx.strokeStyle = 'rgba(201,168,76,0.3)';
@@ -1461,6 +1454,7 @@ function shareBusinessCard() {
   }, 'image/png');
 }
 
+// ─── Checklist إجراءات تلقائية بعد الجلسة ─────────────────
 function addDays(dateStr, n) {
   const d = new Date(dateStr); d.setDate(d.getDate()+n);
   return d.toISOString().split('T')[0];
@@ -1484,6 +1478,7 @@ function toggleTask(caseId, taskId) {
   save(); closeModal(); openCase(caseId);
 }
 
+// ─── CRM: سجل المكالمات والاجتماعات ───────────────────────
 function addCrmLog(caseId) {
   const c = store.cases.find(x=>x.id===caseId);
   if (!c) return;
